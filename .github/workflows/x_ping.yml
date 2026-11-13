@@ -1,0 +1,66 @@
+name: X to Discord Notifier
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub may delay this by a few minutes under load;
+    # that's fine, it just means a slightly later check, never a missed one.
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+# Needed so the job can commit the updated state.json back to the repo.
+permissions:
+  contents: write
+
+concurrency:
+  group: x-ping
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Make sure we have a token that can push, and fetch full history
+          # so there's no surprise with shallow-clone push rejections.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run X check
+        env:
+          X_AUTH_TOKEN: ${{ secrets.X_AUTH_TOKEN }}
+          X_CT0: ${{ secrets.X_CT0 }}
+          TARGET_USERS: ${{ secrets.TARGET_USERS }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_ROLE_ID: ${{ secrets.DISCORD_ROLE_ID }}
+          INCLUDE_REPLIES: "false"
+        run: python check_x.py
+
+      - name: Commit updated state.json if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- state.json; then
+            echo "No changes to state.json; nothing to commit."
+            exit 0
+          fi
+
+          git add state.json
+          git commit -m "chore: update state.json [skip ci]"
+
+          # Rebase onto latest remote in case another run pushed in the meantime,
+          # then push. Retry once on failure (e.g. race with a concurrent run).
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}"
