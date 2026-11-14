@@ -2,9 +2,12 @@ name: X to Discord Notifier
 
 on:
   schedule:
-    # Every 15 minutes. GitHub may delay this by a few minutes under load;
-    # that's fine, it just means a slightly later check, never a missed one.
-    - cron: "*/15 * * * *"
+    # Every 5 minutes -- the shortest interval GitHub reliably honors for
+    # scheduled workflows. Safe to run this often now that the repo is public
+    # (public repos get unlimited GitHub Actions minutes). GitHub may still
+    # delay a run by a few minutes under high platform load; that's fine, it
+    # just means a slightly later check, never a missed one.
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 # Needed so the job can commit the updated state.json back to the repo.
