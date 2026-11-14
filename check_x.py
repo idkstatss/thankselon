@@ -13,6 +13,8 @@ Designed to run unattended via GitHub Actions on a schedule. Behavior:
   to Discord (so you don't get a flood of historical tweets).
 - Skips retweets and (by default) replies; only original posts and quote
   tweets trigger a notification. Configurable via INCLUDE_REPLIES env var.
+- The Discord message is link-only (no quoted tweet text): fxtwitter.com
+  already renders a full rich embed from the link alone.
 
 Environment variables (all set as GitHub Secrets / workflow env):
   X_AUTH_TOKEN      - value of the 'auth_token' cookie from a logged-in X session
@@ -27,7 +29,6 @@ Environment variables (all set as GitHub Secrets / workflow env):
 import asyncio
 import json
 import os
-import re
 import sys
 import tempfile
 import traceback
@@ -46,11 +47,6 @@ X_CT0 = os.environ.get("X_CT0", "").strip()
 
 TARGET_USERS_RAW = os.environ.get("TARGET_USERS", "").strip()
 TARGET_USERS = [u.strip().lstrip("@") for u in TARGET_USERS_RAW.split(",") if u.strip()]
-
-# Matches any http(s) URL, used to strip X's auto-appended t.co media links
-# out of the quoted tweet text (the fxtwitter link we append already handles
-# the rich embed, so keeping the t.co link too just duplicates it).
-URL_PATTERN = re.compile(r"https?://\S+")
 
 
 def log(msg: str) -> None:
@@ -97,18 +93,12 @@ def build_fxtwitter_url(username: str, tweet_id: str) -> str:
     return f"https://fxtwitter.com/{username}/status/{tweet_id}"
 
 
-def clean_tweet_text(text: str) -> str:
+def send_discord_notification(username: str, tweet_id: str) -> bool:
     """
-    Strip URLs (X auto-appends a t.co link whenever a tweet has media/a card)
-    out of the tweet text we quote, since the fxtwitter link we add separately
-    already provides the rich embed. Leaves the rest of the text untouched,
-    collapsing any extra whitespace left behind.
+    Link-only notification. fxtwitter.com renders a full rich embed (text,
+    image/video, etc.) from the link alone, so there's no need to also quote
+    the tweet's text in the message body.
     """
-    stripped = URL_PATTERN.sub("", text)
-    return re.sub(r"[ \t]+", " ", stripped).strip()
-
-
-def send_discord_notification(username: str, tweet_id: str, text: str) -> bool:
     if not DISCORD_WEBHOOK_URL:
         log("ERROR: DISCORD_WEBHOOK_URL is not set; cannot send notification.")
         return False
@@ -116,12 +106,7 @@ def send_discord_notification(username: str, tweet_id: str, text: str) -> bool:
     url = build_fxtwitter_url(username, tweet_id)
     role_prefix = f"<@&{DISCORD_ROLE_ID}> " if DISCORD_ROLE_ID else ""
 
-    snippet = clean_tweet_text(text)
-    if len(snippet) > 300:
-        snippet = snippet[:297] + "..."
-
-    body = f"\n{snippet}" if snippet else ""
-    content = f"{role_prefix}**New post from @{username}**{body}\n{url}"
+    content = f"{role_prefix}**New post from @{username}**\n{url}"
 
     payload = {"content": content}
 
@@ -201,7 +186,6 @@ async def process_user(client: Client, username: str, state: dict) -> dict:
         return user_state
 
     tweet_id = str(tweet.id)
-    tweet_text = getattr(tweet, "full_text", None) or getattr(tweet, "text", "") or ""
 
     if last_id is None:
         # First run for this user: baseline silently, no Discord ping.
@@ -225,7 +209,7 @@ async def process_user(client: Client, username: str, state: dict) -> dict:
         return user_state
 
     log(f"INFO: new tweet detected for @{username}: {tweet_id}")
-    sent = send_discord_notification(username, tweet_id, tweet_text)
+    sent = send_discord_notification(username, tweet_id)
     if sent:
         return {"last_id": tweet_id}
     else:
