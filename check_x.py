@@ -27,6 +27,7 @@ Environment variables (all set as GitHub Secrets / workflow env):
 import asyncio
 import json
 import os
+import re
 import sys
 import tempfile
 import traceback
@@ -45,6 +46,11 @@ X_CT0 = os.environ.get("X_CT0", "").strip()
 
 TARGET_USERS_RAW = os.environ.get("TARGET_USERS", "").strip()
 TARGET_USERS = [u.strip().lstrip("@") for u in TARGET_USERS_RAW.split(",") if u.strip()]
+
+# Matches any http(s) URL, used to strip X's auto-appended t.co media links
+# out of the quoted tweet text (the fxtwitter link we append already handles
+# the rich embed, so keeping the t.co link too just duplicates it).
+URL_PATTERN = re.compile(r"https?://\S+")
 
 
 def log(msg: str) -> None:
@@ -91,6 +97,17 @@ def build_fxtwitter_url(username: str, tweet_id: str) -> str:
     return f"https://fxtwitter.com/{username}/status/{tweet_id}"
 
 
+def clean_tweet_text(text: str) -> str:
+    """
+    Strip URLs (X auto-appends a t.co link whenever a tweet has media/a card)
+    out of the tweet text we quote, since the fxtwitter link we add separately
+    already provides the rich embed. Leaves the rest of the text untouched,
+    collapsing any extra whitespace left behind.
+    """
+    stripped = URL_PATTERN.sub("", text)
+    return re.sub(r"[ \t]+", " ", stripped).strip()
+
+
 def send_discord_notification(username: str, tweet_id: str, text: str) -> bool:
     if not DISCORD_WEBHOOK_URL:
         log("ERROR: DISCORD_WEBHOOK_URL is not set; cannot send notification.")
@@ -99,11 +116,12 @@ def send_discord_notification(username: str, tweet_id: str, text: str) -> bool:
     url = build_fxtwitter_url(username, tweet_id)
     role_prefix = f"<@&{DISCORD_ROLE_ID}> " if DISCORD_ROLE_ID else ""
 
-    snippet = text.strip()
+    snippet = clean_tweet_text(text)
     if len(snippet) > 300:
         snippet = snippet[:297] + "..."
 
-    content = f"{role_prefix}**New post from @{username}**\n{snippet}\n{url}"
+    body = f"\n{snippet}" if snippet else ""
+    content = f"{role_prefix}**New post from @{username}**{body}\n{url}"
 
     payload = {"content": content}
 
