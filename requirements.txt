@@ -1,2 +1,2 @@
-twikit==2.3.3
+twifork==2.4.0
 requests==2.32.3
