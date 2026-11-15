@@ -15,6 +15,10 @@ Designed to run unattended via GitHub Actions on a schedule. Behavior:
   tweets trigger a notification. Configurable via INCLUDE_REPLIES env var.
 - The Discord message is link-only (no quoted tweet text): fxtwitter.com
   already renders a full rich embed from the link alone.
+- Picks the eligible tweet with the highest numeric ID among the fetched
+  batch, rather than trusting API list order. X's timeline endpoint returns
+  a pinned tweet first regardless of its actual age, which would otherwise
+  make the bot get stuck forever re-selecting that one old tweet.
 
 Environment variables (all set as GitHub Secrets / workflow env):
   X_AUTH_TOKEN      - value of the 'auth_token' cookie from a logged-in X session
@@ -47,6 +51,11 @@ X_CT0 = os.environ.get("X_CT0", "").strip()
 
 TARGET_USERS_RAW = os.environ.get("TARGET_USERS", "").strip()
 TARGET_USERS = [u.strip().lstrip("@") for u in TARGET_USERS_RAW.split(",") if u.strip()]
+
+# How many of the account's most recent tweets to pull per check. Wider than
+# strictly necessary so a prolific account's new tweet doesn't scroll out of
+# the window between runs.
+FETCH_COUNT = 20
 
 
 def log(msg: str) -> None:
@@ -143,26 +152,40 @@ def is_eligible_tweet(tweet) -> bool:
     return True
 
 
+def _tweet_id_sort_key(tweet) -> int:
+    """
+    X status IDs are Snowflake-style and increase monotonically over time, so
+    comparing them numerically is a reliable 'which tweet is actually newer'
+    check -- unlike trusting the position a tweet appears at in the API
+    response, which can put a pinned tweet first regardless of its age.
+    """
+    try:
+        return int(tweet.id)
+    except (TypeError, ValueError):
+        return -1
+
+
 async def fetch_latest_eligible_tweet(client: Client, username: str):
     """
-    Returns the most recent eligible (non-RT, non-reply-unless-configured) tweet
-    for a user, or None if none found / on failure. Raises nothing; caller should
-    still wrap this in try/except for network-layer surprises during the call itself.
+    Returns the eligible (non-RT, non-reply-unless-configured) tweet with the
+    highest numeric ID among the user's most recent tweets, or None if none
+    found / on failure. Raises nothing; caller should still wrap this in
+    try/except for network-layer surprises during the call itself.
     """
     user = await client.get_user_by_screen_name(username)
     if user is None:
         log(f"WARNING: could not resolve user @{username} (account may be suspended/renamed).")
         return None
 
-    tweets = await client.get_user_tweets(user.id, "Tweets", count=10)
+    tweets = await client.get_user_tweets(user.id, "Tweets", count=FETCH_COUNT)
     if not tweets:
         return None
 
-    for tweet in tweets:
-        if is_eligible_tweet(tweet):
-            return tweet
+    eligible = [t for t in tweets if is_eligible_tweet(t)]
+    if not eligible:
+        return None
 
-    return None
+    return max(eligible, key=_tweet_id_sort_key)
 
 
 async def process_user(client: Client, username: str, state: dict) -> dict:
